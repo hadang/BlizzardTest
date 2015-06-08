@@ -10,33 +10,41 @@ using System.IO;
 
 namespace BlizzardTest
 {
+    /*
+     * The client class to work on the client side
+     * It has two threads, the main thread is to etablish connection with the server and take commands from the Console (user input)
+     * The second thread is to handle incoming messages from server
+     */
     class Client
     {
         string ServerName { get; set; }
         int Port { get; set; }
         string ClientName { get; set; }
-        static Thread listener = null;
-        static TcpClient tcpClient = null;
+        private volatile static bool threadRunning = true;
         public Client(string server, int port, string client)
         {
             ServerName = server;
             Port = port;
             ClientName = client;
         }
+        //the second thread, handling the incoming message from server
         private static void ListenerService(object reader)
         {
             try
             {
-                while (true)
+                while (threadRunning)
                 {
                     string serverMsg = ((StreamReader)reader).ReadLine();
-                    string[] list = serverMsg.Split('|');
+                    if (string.IsNullOrEmpty(serverMsg))
+                        break;
+                    string[] list = serverMsg.Split(Server.SEPARATOR);
                     if (list.Count() > 1)
                     {
                         int code = -1;
                         if (!int.TryParse(list[0], out code))
                         {
                             Console.WriteLine("ERROR: unknown return code \"{0}\"", list[0]);
+                            continue;
                         }
                         if (code == Server.CODE_CLIENT_LIST)
                         {
@@ -53,25 +61,26 @@ namespace BlizzardTest
             }
             catch (Exception e)
             {
-                Console.WriteLine("ERROR 1: {0}", e.Message);
-                Environment.Exit(0);
+                Console.WriteLine("LISTNER ERROR: {0}", e.Message);
             }
         }
+        //The main thread, to establish connection to the provided server and take commands from Console
         public void Start()
         {
-           
             try
             {
-                tcpClient = new TcpClient(ServerName, Port);
+                //Establish a TCP connection with the server, using name and port
+                TcpClient tcpClient = new TcpClient(ServerName, Port);
                 using (Stream stream = tcpClient.GetStream())
                 {
+                    //reader stream and writer stream over the network stream
                     StreamReader reader = new StreamReader(stream);
                     StreamWriter writer = new StreamWriter(stream);
                     writer.AutoFlush = true;
                     //Register the client name to the server
                     writer.WriteLine(ClientName);
                     string firstMessage = reader.ReadLine();
-                    string[] codes = firstMessage.Split('~');
+                    string[] codes = firstMessage.Split(Server.SEPARATOR);
                     if (codes.Count() > 1)
                     {
                         if (codes[0] == string.Format("{0}", Server.NAME_IS_USED))
@@ -84,8 +93,8 @@ namespace BlizzardTest
                     //Display the welcome message
                     Console.WriteLine(firstMessage);
                     //start a dedicated thread to handle message coming from server
-                    listener = new Thread(new ParameterizedThreadStart(ListenerService));
-                    listener.Start(reader);
+                    Thread listenerThread = new Thread(new ParameterizedThreadStart(ListenerService));
+                    listenerThread.Start(reader);
                     while (true)
                     {
                         string command = Console.ReadLine();
@@ -94,7 +103,14 @@ namespace BlizzardTest
                             break;
 
                     }
-                    listener.Abort();
+                    //stop the listener thread
+                    if (listenerThread.IsAlive)
+                    {
+                        threadRunning = false;
+                        Thread.Sleep(1);
+                        listenerThread.Join();
+                    }
+                    tcpClient.Close();
                 }
             }
             catch (Exception e)
@@ -106,19 +122,29 @@ namespace BlizzardTest
         }
         static void Main(string[] args)
         {
-            if (args.Count() != 3)
+            if (args.Count() != 2)
             {
-                Console.WriteLine("Usage: Client <server>:<port> username");
+                Usage();
                 return;
             }
             int port = -1;
-            if (!int.TryParse(args[1], out port))
+            string[] serverArgs = args[0].Split(':');
+            if (serverArgs.Count() != 2)
+            {
+                Usage();
+                return;
+            }
+            if (!int.TryParse(serverArgs[1], out port))
             {
                 Console.WriteLine("<port> should be an integer");
                 return;
             }
-            Client client = new Client(args[0], port, args[2]);
+            Client client = new Client(serverArgs[0], port, args[1]);
             client.Start();
+        }
+        static void Usage()
+        {
+            Console.WriteLine("Usage: Client <server>:<port> username");
         }
     }
 }
